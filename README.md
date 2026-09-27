@@ -26,6 +26,7 @@ Usque is an open-source reimplementation of the Cloudflare WARP client's MASQUE 
     - [Connect/Disconnect Hooks](#connectdisconnect-hooks)
       - [Example on Linux](#example-on-linux)
       - [Example on Windows](#example-on-windows)
+    - [Post-quantum mode](#post-quantum-mode)
     - [TCP and HTTP/2 Support](#tcp-and-http2-support)
       - [HTTP/2 Configuration](#http2-configuration)
     - [Configuration](#configuration)
@@ -433,6 +434,21 @@ If you prefer PowerShell, keep the hook itself pointed at a small `.bat` stub th
 
 > [!NOTE]
 > Hooks are not run on initial process startup before the first connect, nor on final process shutdown. They fire strictly in response to tunnel lifecycle events.
+
+### Post-quantum mode
+
+Use `--pq` to require the hybrid P256Kyber768Draft00 key exchange for the MASQUE tunnel:
+
+```shell
+usque socks --pq -b 127.0.0.1 -p 1080
+usque l4-socks --pq -b 127.0.0.1 -p 1080
+```
+
+The flag is available on `socks`, `http-proxy`, `nativetun`, `portfw`, `l4-socks`, and `l4-http-proxy`. It requires TLS 1.3 and fails if the server cannot negotiate the draft hybrid group. Endpoint public-key pinning remains enabled. Without the flag, classical interoperability remains available.
+
+Look for `MASQUE PQ handshake: TLS=0x304 group=P256Kyber768Draft00 ALPN=h3` in the log. The `kex` field from `/cdn-cgi/trace` describes the inner HTTPS connection, so it does not identify the tunnel's key exchange.
+
+The checked-in compatibility modules allow a normal `go build .`; no special compiler or C library is required. See [PQ mode details and validation](_docs/pq.md) and [dependency provenance](third_party/README.md).
 
 ### TCP and HTTP/2 Support
 

@@ -2,17 +2,17 @@ package api
 
 import (
 	"context"
-	"crypto/tls"
 	"errors"
 	"fmt"
 	"io"
 	"net"
-	"net/http"
 	"sync"
 	"time"
 
-	quic "github.com/quic-go/quic-go"
-	"github.com/quic-go/quic-go/http3"
+	"github.com/metacubex/http"
+	quic "github.com/metacubex/quic-go"
+	"github.com/metacubex/quic-go/http3"
+	"github.com/metacubex/tls"
 )
 
 const (
@@ -196,6 +196,7 @@ func (p *L4Proxy) dial(ctx context.Context, target string) (*l4TCPConn, error) {
 		return nil, err
 	}
 	req.Host = target
+	req.Header.Set("pq-enabled", fmt.Sprint(requiresPostQuantum(p.tlsConfig)))
 	if err := stream.SendRequestHeader(req); err != nil {
 		_ = stream.Close()
 		return nil, err
@@ -246,6 +247,7 @@ func (p *L4Proxy) getOrCreateClientConn(ctx context.Context) (*l4HTTP3Client, er
 		_ = udpConn.Close()
 		return nil, err
 	}
+	logPostQuantumHandshake(p.tlsConfig, quicConn.ConnectionState().TLS)
 
 	newClient := &l4HTTP3Client{
 		udpConn:    udpConn,

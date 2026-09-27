@@ -10,7 +10,7 @@ import (
 	"github.com/Diniboy1123/usque/api"
 	"github.com/Diniboy1123/usque/config"
 	"github.com/Diniboy1123/usque/internal"
-	quic "github.com/quic-go/quic-go"
+	quic "github.com/metacubex/quic-go"
 	"github.com/spf13/cobra"
 )
 
@@ -102,7 +102,7 @@ func buildL4Proxy(cmd *cobra.Command, mode string) (l4ProxyOptions, *api.L4Proxy
 	if err != nil {
 		return opts, nil, fmt.Errorf("failed to generate cert: %v", err)
 	}
-	tlsConfig, err := api.PrepareTlsConfig(privKey, peerPubKey, cert, internal.L4ConnectSNI, opts.insecure)
+	tlsConfig, err := prepareTunnelTLSConfig(cmd, privKey, peerPubKey, cert, internal.L4ConnectSNI, opts.insecure)
 	if err != nil {
 		return opts, nil, fmt.Errorf("failed to prepare TLS config: %v", err)
 	}
@@ -212,6 +212,7 @@ func addL4ProxyFlags(cmd *cobra.Command, defaultPort, proxyName string) {
 	cmd.Flags().DurationP("keepalive-period", "k", 30*time.Second, "Keepalive period for MASQUE connection")
 	cmd.Flags().Uint16P("initial-packet-size", "i", 0, "Custom initial packet size for MASQUE connection (default: auto with PMTU discovery)")
 	cmd.Flags().Bool("insecure", false, "Disable endpoint certificate pinning and trust any certificate")
+	cmd.Flags().Bool("pq", false, "Require hybrid post-quantum P256Kyber768Draft00 key agreement (no classical fallback)")
 	cmd.Flags().BoolP("local-dns", "l", true, "Resolve proxy target names locally before opening L4 CONNECT streams (required for hostname targets)")
 	cmd.Flags().Bool("system-dns", false, "Resolve names via the OS (e.g. /etc/resolv.conf) instead of -d")
 	cmd.Flags().String("on-connect", "", "Path to an executable to run after each successful L4 CONNECT stream (no args; context via USQUE_* env vars)")

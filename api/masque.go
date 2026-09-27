@@ -3,20 +3,21 @@ package api
 import (
 	"context"
 	"crypto/ecdsa"
-	"crypto/tls"
 	"crypto/x509"
 	"errors"
 	"fmt"
+	"log"
 	"net"
-	"net/http"
 	"net/url"
 	"strings"
 
 	connectip "github.com/Diniboy1123/connect-ip-go"
-	"github.com/quic-go/quic-go"
-	"github.com/quic-go/quic-go/http3"
+	"github.com/metacubex/http"
+	"github.com/metacubex/http/http2"
+	"github.com/metacubex/quic-go"
+	"github.com/metacubex/quic-go/http3"
+	"github.com/metacubex/tls"
 	"github.com/yosida95/uritemplate/v3"
-	"golang.org/x/net/http2"
 )
 
 // PrepareTlsConfig creates a TLS configuration using the provided certificate and SNI (Server Name Indication).
@@ -28,11 +29,12 @@ import (
 //   - cert: [][]byte - The certificate chain to use for TLS authentication.
 //   - sni: string - The Server Name Indication (SNI) to use.
 //   - insecure: bool - When true, skip endpoint public key pinning.
+//   - postQuantum: bool - Require P256Kyber768Draft00 with no classical fallback.
 //
 // Returns:
 //   - *tls.Config: A TLS configuration for secure communication.
 //   - error: An error if TLS setup fails.
-func PrepareTlsConfig(privKey *ecdsa.PrivateKey, peerPubKey *ecdsa.PublicKey, cert [][]byte, sni string, insecure bool) (*tls.Config, error) {
+func PrepareTlsConfig(privKey *ecdsa.PrivateKey, peerPubKey *ecdsa.PublicKey, cert [][]byte, sni string, insecure, postQuantum bool) (*tls.Config, error) {
 	tlsConfig := &tls.Config{
 		Certificates: []tls.Certificate{
 			{
@@ -44,21 +46,29 @@ func PrepareTlsConfig(privKey *ecdsa.PrivateKey, peerPubKey *ecdsa.PublicKey, ce
 		NextProtos: []string{http3.NextProtoH3},
 		// WARN: SNI is usually not for the endpoint, so we must skip verification
 		InsecureSkipVerify: true,
-		// To avoid the Hello Retry Requests you would uncomment this, but I prefer to keep Go defaults, maybe
-		// Cloudflare adds support for more curves in the future and I don't want to hardcode it here
-		// NOTE: If I add more than one, Go will still use one share it picks and it was never P-256 for me
-		// so kept it doing HRRs for now.
-		// I couldn't get the official client to work with HTTP/2, so couldn't check its behavior.
-		/*CurvePreferences: []tls.CurveID{
-			tls.CurveP256,
-		},*/
+	}
+	if postQuantum {
+		// This is the historical Kyber draft used by WARP, not final ML-KEM.
+		tlsConfig.MinVersion = tls.VersionTLS13
+		tlsConfig.MaxVersion = tls.VersionTLS13
+		tlsConfig.CurvePreferences = []tls.CurveID{tls.P256Kyber768Draft00}
+		// Keep this independent of pinning: --insecure must not disable PQ enforcement.
+		tlsConfig.VerifyConnection = func(cs tls.ConnectionState) error {
+			if cs.Version != tls.VersionTLS13 || cs.CurveID != tls.P256Kyber768Draft00 {
+				return fmt.Errorf("PQ mode requires TLS 1.3 with P256Kyber768Draft00; negotiated version=0x%x group=%s", cs.Version, cs.CurveID)
+			}
+			return nil
+		}
 	}
 
 	if !insecure {
+		if peerPubKey == nil {
+			return nil, errors.New("missing endpoint public key for certificate pinning")
+		}
 		// we pin to the endpoint public key
 		tlsConfig.VerifyPeerCertificate = func(rawCerts [][]byte, verifiedChains [][]*x509.Certificate) error {
 			if len(rawCerts) == 0 {
-				return nil
+				return errors.New("missing endpoint certificate")
 			}
 
 			cert, err := x509.ParseCertificate(rawCerts[0])
@@ -111,6 +121,7 @@ func ConnectTunnel(ctx context.Context, tlsConfig *tls.Config, quicConfig *quic.
 	additionalHeaders := http.Header{
 		"User-Agent": []string{""},
 	}
+	additionalHeaders.Set("pq-enabled", fmt.Sprint(requiresPostQuantum(tlsConfig)))
 
 	if useHTTP2 {
 		h2Endpoint, ok := endpoint.(*net.TCPAddr)
@@ -120,8 +131,6 @@ func ConnectTunnel(ctx context.Context, tlsConfig *tls.Config, quicConfig *quic.
 
 		h2Headers := additionalHeaders.Clone()
 		h2Headers.Set("cf-connect-proto", "cf-connect-ip")
-		// TODO: support PQC
-		h2Headers.Set("pq-enabled", "false")
 
 		h2Client, err := newHTTP2Client(tlsConfig, h2Endpoint, connectUri)
 		if err != nil {
@@ -134,6 +143,9 @@ func ConnectTunnel(ctx context.Context, tlsConfig *tls.Config, quicConfig *quic.
 				return nil, nil, nil, nil, errors.New("login failed! Please double-check if your tls key and cert is enrolled in the Cloudflare Access service")
 			}
 			return nil, nil, nil, nil, fmt.Errorf("failed to dial connect-ip over HTTP/2: %w", err)
+		}
+		if rsp.TLS != nil {
+			logPostQuantumHandshake(tlsConfig, *rsp.TLS)
 		}
 		return nil, nil, ipConn, rsp, nil
 	}
@@ -186,6 +198,7 @@ func connectTunnelHTTP3(ctx context.Context, tlsConfig *tls.Config, quicConfig *
 		_ = udpConn.Close()
 		return nil, nil, nil, nil, err
 	}
+	logPostQuantumHandshake(tlsConfig, conn.ConnectionState().TLS)
 
 	tr := &http3.Transport{
 		EnableDatagrams: true,
@@ -296,6 +309,17 @@ func newHTTP2Client(baseTLSConfig *tls.Config, endpoint *net.TCPAddr, connectURI
 	}
 
 	return &http.Client{Transport: transport}, nil
+}
+
+// The explicit singleton preference also controls CONNECT metadata on reconnects.
+func requiresPostQuantum(c *tls.Config) bool {
+	return c != nil && len(c.CurvePreferences) == 1 && c.CurvePreferences[0] == tls.P256Kyber768Draft00
+}
+
+func logPostQuantumHandshake(c *tls.Config, cs tls.ConnectionState) {
+	if requiresPostQuantum(c) {
+		log.Printf("MASQUE PQ handshake: TLS=0x%x group=%s ALPN=%s", cs.Version, cs.CurveID, cs.NegotiatedProtocol)
+	}
 }
 
 // authorityWithDefaultPort normalizes URL authority by adding a default port when missing.

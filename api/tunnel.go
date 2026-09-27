@@ -2,7 +2,6 @@ package api
 
 import (
 	"context"
-	"crypto/tls"
 	"errors"
 	"fmt"
 	"log"
@@ -12,6 +11,7 @@ import (
 
 	connectip "github.com/Diniboy1123/connect-ip-go"
 	"github.com/Diniboy1123/usque/internal"
+	"github.com/metacubex/tls"
 	"github.com/songgao/water"
 	"golang.zx2c4.com/wireguard/tun"
 )
